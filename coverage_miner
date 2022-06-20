@@ -1,0 +1,167 @@
+import pandas as pd  # to handle trace data efficiently# GoldMine Re-Implementation Code in Python
+
+# and Info Gain calculation
+def coverage_gain(feature_val_pair, target):
+    To_Include = ' & '.join('(target_features_df[\'' + x[0] + '\'] == ' + str(x[1]) + ')' for x in feature_val_pair
+                                ) + '&' + '(target_features_df[\'' + target + '\']==\'X\')'
+    X_rows = target_features_df[eval(To_Include)]
+    X_rows_covered = X_rows.index.tolist()
+    number_of_row_ = len(X_rows_covered)
+    X_total = len(target_features_df[eval('(target_features_df[\'' + target + '\']==\'X\')')])
+    gain = number_of_row_ / X_total
+    return gain
+def gain_added(addl_row_covered, total_rows_in_trace):
+    return 1.0 * addl_row_covered / total_rows_in_trace #新覆盖行
+
+def check_sim_data(feature_val_pair, target_features_df,target):
+    # To_Include = ' & '.join('(target_features_df.' + x[0] + ' == ' + str(x[1]) + ')' for x in feature_val_pair)
+    To_Include = ' & '.join('(target_features_df[\'' + x[0] + '\'] == ' + str(x[1]) + ')' for x in
+                            feature_val_pair) + '&' + '(target_features_df[\'' + target + '\']!=\'X\')'
+    return target_features_df[eval(To_Include)]
+
+def gen_candidate(feature_val, target, target_features_df, feature_val_pair, assertion_c, gmin):  #(F,'z',,,P,Ac,gim)
+    i=0
+    # F = [(a, 0), (a, 1), (b, 0), ..., ()] feature_val
+    #target 真值表
+    while i <len(feature_val):   #fea_val: fi (a,`0)
+        fea_val=feature_val[i]
+        fea = fea_val[0]  #a
+        val = fea_val[1]  #1
+        feature_val_pair_aug = feature_val_pair[:]
+        feature_val_pair_aug.append(fea_val) #P和fi并集
+        if coverage_gain(feature_val_pair_aug,target) >= gmin:
+            derived_df = check_sim_data(feature_val_pair_aug, target_features_df,target)
+            target_vals = derived_df[target].drop_duplicates().tolist() #删除重复行，并转为为列表
+            if len(target_vals) == 1 and target_vals[0] == 0:
+                # assertion_c_ is of the format [[], ()]
+                assertion_c_ = [feature_val_pair_aug, tuple([target, 0])]
+                # assertion_c is of the format [[[], ()], [[], ()], ...]
+                assertion_c.append(assertion_c_)
+                i+=1
+            elif len(target_vals) == 1 and target_vals[0] == 1:
+                # assertion_c_ is of the format [[], ()]
+                assertion_c_ = [feature_val_pair_aug, tuple([target, 1])]
+                # assertion_c is of the format [[[], ()], [[], ()], ...]
+                assertion_c.append(assertion_c_)
+                i+=1
+            elif len(target_vals) > 1: # target_vals 当a=0时，z值的个数
+                del feature_val[i] #F-fi
+                gen_candidate(feature_val, target, target_features_df, feature_val_pair_aug, assertion_c, gmin)
+            else:
+                i+=1
+        else:
+            i+=1
+    return assertion_c
+def recalibrate_add(assertion_sol, assertion_s, assertion_c, target_features_df, total_rows_in_trace, gmin):
+    # assertion_sol: indices of the row of the truth table already covered
+    # assertion_s  : solution set of assertions   As
+    # assertion_c  : new set of [[], ()]. See gen_candidate for this   Ac
+    # target_features_df : the whole simulation trace data frame
+    # gmin : minimum coverage gain
+    for i in range(len(assertion_c) - 1):
+        for c in range(len(assertion_c) - 1 - i):
+            if len(assertion_c[c][0]) > len(assertion_c[c + 1][0]):
+                assertion_c[c], assertion_c[c + 1] = assertion_c[c + 1], assertion_c[c]
+    for candidate in assertion_c:
+        antecedent_feature = candidate[0]
+        consequent_target = candidate[1]
+        To_Include = ' & '.join('(target_features_df[\'' + x[0] + '\'] == ' + str(x[1]) + ')' for x in
+                                antecedent_feature) + ' & ' + '(target_features_df.' + consequent_target[
+                         0] + ' == ' + str(
+            consequent_target[1]) + ')'
+        To_Include2 = ' & '.join('(target_features_df[\'' + x[0] + '\'] == ' + str(x[1]) + ')' for x in
+                                antecedent_feature) + ' & ' + '(target_features_df.' + consequent_target[
+                         0] + ' == ' + '\'X\' )'
+        dataframe_rows_X = target_features_df[eval(To_Include2)]
+        rows_covered_X = dataframe_rows_X.index.tolist()
+        number_of_X=len(rows_covered_X)
+        # a=0&b=0
+        dataframe_rows = target_features_df[eval(To_Include)]
+        rows_covered = dataframe_rows.index.tolist()
+        for i in rows_covered_X:
+            rows_covered.append(i)
+        print('Rows covered: ' + str(rows_covered))
+        additional_rows_covered = list(set(rows_covered).difference(set(assertion_sol))) #集合差集
+        print('Additional rows covered: ' + str(additional_rows_covered))
+        if gain_added(len(additional_rows_covered), total_rows_in_trace) >= gmin:
+            assertion_sol.extend(additional_rows_covered)
+            assertion_s_ = induct_assertion(antecedent_feature, consequent_target)
+            assertion_s.append(assertion_s_) #As列表
+
+    return assertion_sol, assertion_s
+
+
+def induct_assertion(antecedent_feature, consequent_target): #antecedent_feature: ([a,1],[b,1]) consequent_target:([z,1])
+    assertion = ' & '.join('(' + x[0] + ' == ' + str(x[1]) + ')' for x in antecedent_feature) #(x[0]==x[1])&
+    assertion = assertion + ' |-> ' + '(' + consequent_target[0] + ' == ' + str(consequent_target[1]) + ')'
+    #(a==1)&(b==1) |-> (Z==1)
+    return assertion
+
+
+def print_assertion(assertions): #打印As
+    count = 1
+    for assertion in assertions:
+        print(str(count) + ': ' + assertion)
+        count = count + 1
+
+    return
+
+
+def construct_dframe(features, target, rows_):
+    dframe = pd.DataFrame() # 电子表格创建 data index行标 columns列标 dtype存储数据类型 copy（bool）
+
+    for feature in features:
+        dframe = pd.concat([dframe, rows_[feature]], axis=1)   #列连接
+
+    dframe = pd.concat([dframe, rows_[target]], axis=1)
+    return dframe
+
+
+def mine(features, target, rows_, CONFIG):
+    gmin = CONFIG['min_coverage']
+    gthreshold = 0.01 #minimum coverage gain threshold
+    cthreshold = 0.99 #maximum total coverage threshold
+
+    csv_dframe = construct_dframe(features, target, rows_) #features: [(a,0),(a,1)]
+
+    total_rows_in_trace = csv_dframe.shape[0]
+
+    print('Total rows in trace: ' + str(total_rows_in_trace))
+
+    assertion_c = [] #Ac
+    assertion_s = [] #As
+    assertion_sol = [] #已经被覆盖的真值表行索引
+
+    coverage = 0.0
+    feature_val_pair=[]
+    feature_val = []
+    value = [0, 1]
+    for fea in features:
+        for val in value:
+            feature_val.append((fea, val))
+    while not (gmin < gthreshold or coverage > cthreshold):
+        assertion_c=gen_candidate(feature_val, target, csv_dframe, feature_val_pair, assertion_c, gmin)
+        print('$' * 10)
+        print(assertion_c)  #Ac
+        print('$' * 10)
+        assertion_sol, assertion_s = recalibrate_add(assertion_sol, assertion_s, assertion_c, csv_dframe,
+                                                     total_rows_in_trace, gmin) #As
+        print('Total rows covered: ' + str(assertion_sol))
+
+        coverage = 1.0 * len(assertion_sol) / total_rows_in_trace #目前的覆盖率
+        print('目前覆盖率：',coverage)
+        gmin = gmin / 2.0
+        assertion_c = [] #清空Ac
+        feature_val=[]
+        for fea in features:
+            for val in value:
+                feature_val.append((fea, val))
+    print_assertion(assertion_s)#打印 As
+
+    return assertion_s
+
+CONFIG={'min_coverage':0.5}
+features=['a','b','c']
+target='z'
+target_features_df=pd.DataFrame([[0,0,0,0],[0,1,1,0],[1,0,1,0],[1,1,0,1],[0,0,1,'X'],[0,1,0,'X'],[1,0,0,'X'],[1,1,1,'X']],index=list('12345678'),columns=list('abcz'))
+mine(features,target,target_features_df,CONFIG)
